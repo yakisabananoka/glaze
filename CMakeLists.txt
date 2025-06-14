@@ -4,7 +4,7 @@ include(cmake/prelude.cmake)
 
 project(
     glaze
-    VERSION 5.0.0
+    VERSION 5.4.1
     LANGUAGES CXX
 )
 
@@ -31,14 +31,14 @@ if (MSVC)
     endif()
    endif()
 else()
-  target_compile_options(glaze_glaze INTERFACE "-Wno-missing-braces")
+  target_compile_options(${PROJECT_NAME}_${PROJECT_NAME} INTERFACE "-Wno-missing-braces")
 endif()
 
-set_property(TARGET glaze_glaze PROPERTY EXPORT_NAME glaze)
+set_property(TARGET ${PROJECT_NAME}_${PROJECT_NAME} PROPERTY EXPORT_NAME glaze)
 
-target_compile_features(glaze_glaze INTERFACE cxx_std_23)
+target_compile_features(${PROJECT_NAME}_${PROJECT_NAME} INTERFACE cxx_std_23)
 target_include_directories(
-    glaze_glaze ${warning_guard}
+    ${PROJECT_NAME}_${PROJECT_NAME} ${warning_guard}
     INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
 )
 
@@ -61,3 +61,30 @@ option(glaze_BUILD_EXAMPLES "Build GLAZE examples" OFF)
 if(glaze_BUILD_EXAMPLES)
   add_subdirectory(examples)
 endif()
+
+option(glaze_EETF_FORMAT "Enable Erlang external term format parsing" OFF)
+
+if(glaze_EETF_FORMAT)
+  list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+  find_package(Erlang REQUIRED)
+  target_link_libraries(
+    glaze_glaze ${warning_guard}
+    INTERFACE
+      Erlang::EI
+      Erlang::Erlang
+  )
+  target_compile_definitions(glaze_glaze INTERFACE GLZ_ENABLE_EETF)
+endif(glaze_EETF_FORMAT)
+
+option(glaze_ENABLE_SSL "Enable SSL/TLS support for HTTPS servers" OFF)
+
+if(glaze_ENABLE_SSL)
+  find_package(OpenSSL REQUIRED)
+  target_link_libraries(
+    glaze_glaze ${warning_guard}
+    INTERFACE
+      OpenSSL::SSL
+      OpenSSL::Crypto
+  )
+  target_compile_definitions(glaze_glaze INTERFACE GLZ_ENABLE_SSL)
+endif(glaze_ENABLE_SSL)

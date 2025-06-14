@@ -587,7 +587,7 @@ namespace glz
       static constexpr auto tokens = jmespath::tokenize_as_array<S>();
       static constexpr auto N = tokens.size();
 
-      constexpr bool use_padded = resizable<Buffer> && non_const_buffer<Buffer> && !has_disable_padding(Options);
+      constexpr bool use_padded = resizable<Buffer> && non_const_buffer<Buffer> && !check_disable_padding(Options);
 
       static constexpr auto Opts = use_padded ? is_padded_on<Options>() : is_padded_off<Options>();
 
@@ -610,7 +610,7 @@ namespace glz
 
          skip_ws<Opts>(ctx, it, end);
 
-         for_each<N>([&](auto I) {
+         for_each<N>([&]<auto I>() {
             if (bool(ctx.error)) [[unlikely]] {
                return;
             }
@@ -871,7 +871,7 @@ namespace glz
       const auto& tokens = expression.tokens;
       const auto N = tokens.size();
 
-      constexpr bool use_padded = resizable<Buffer> && non_const_buffer<Buffer> && !has_disable_padding(Options);
+      constexpr bool use_padded = resizable<Buffer> && non_const_buffer<Buffer> && !check_disable_padding(Options);
       static constexpr auto Opts = use_padded ? is_padded_on<Options>() : is_padded_off<Options>();
 
       if constexpr (use_padded) {

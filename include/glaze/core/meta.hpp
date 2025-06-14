@@ -11,6 +11,7 @@
 #include "glaze/util/string_literal.hpp"
 #include "glaze/util/type_traits.hpp"
 #include "glaze/util/variant.hpp"
+#include "glaze/version.hpp"
 
 namespace glz
 {
@@ -261,9 +262,21 @@ namespace glz
    namespace detail
    {
       template <class T, size_t N>
-      inline constexpr std::array<std::string_view, N> convert_ids_to_array_of_sv(const std::array<T, N>& arr)
+         requires(not std::integral<T>)
+      inline constexpr auto convert_ids_to_array(const std::array<T, N>& arr)
       {
          std::array<std::string_view, N> result;
+         for (size_t i = 0; i < N; ++i) {
+            result[i] = arr[i];
+         }
+         return result;
+      }
+
+      template <class T, size_t N>
+         requires(std::integral<T>)
+      inline constexpr auto convert_ids_to_array(const std::array<T, N>& arr)
+      {
+         std::array<T, N> result;
          for (size_t i = 0; i < N; ++i) {
             result[i] = arr[i];
          }
@@ -275,27 +288,25 @@ namespace glz
    inline constexpr auto ids_v = [] {
       if constexpr (ided<T>) {
          if constexpr (local_meta_t<T>) {
-            return detail::convert_ids_to_array_of_sv(std::decay_t<T>::glaze::ids);
+            return detail::convert_ids_to_array(std::decay_t<T>::glaze::ids);
          }
          else {
-            return detail::convert_ids_to_array_of_sv(meta<std::decay_t<T>>::ids);
+            return detail::convert_ids_to_array(meta<std::decay_t<T>>::ids);
          }
       }
       else {
          constexpr auto N = std::variant_size_v<T>;
          std::array<std::string_view, N> ids{};
-         for_each<N>([&](auto I) { ids[I] = glz::name_v<std::decay_t<std::variant_alternative_t<I, T>>>; });
+         for_each<N>([&]<auto I>() { ids[I] = glz::name_v<std::decay_t<std::variant_alternative_t<I, T>>>; });
          return ids;
       }
    }();
-
-   using version_t = std::array<uint32_t, 3>;
 
    template <class T>
    concept versioned = requires { meta<std::decay_t<T>>::version; };
 
    template <class T>
-   inline constexpr version_t version = []() -> version_t {
+   inline constexpr version_t version_v = []() -> version_t {
       if constexpr (versioned<T>) {
          return meta<std::decay_t<T>>::version;
       }

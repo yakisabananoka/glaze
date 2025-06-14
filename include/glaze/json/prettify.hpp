@@ -71,6 +71,10 @@ namespace glz
                ++indent;
                if (size_t(indent) >= state.size()) [[unlikely]] {
                   state.resize(state.size() * 2);
+                  if (state.size() >= max_recursive_depth_limit) [[unlikely]] {
+                     ctx.error = error_code::exceeded_max_recursive_depth;
+                     return;
+                  }
                }
                state[indent] = Array_Start;
                if constexpr (Opts.new_lines_in_arrays) {
@@ -125,6 +129,10 @@ namespace glz
                ++indent;
                if (size_t(indent) >= state.size()) [[unlikely]] {
                   state.resize(state.size() * 2);
+                  if (state.size() >= max_recursive_depth_limit) [[unlikely]] {
+                     ctx.error = error_code::exceeded_max_recursive_depth;
+                     return;
+                  }
                }
                state[indent] = Object_Start;
                if constexpr (not Opts.null_terminated) {
@@ -162,11 +170,10 @@ namespace glz
                   [[fallthrough]];
                }
             }
-               [[unlikely]] default:
-               {
-                  ctx.error = error_code::syntax_error;
-                  return;
-               }
+            [[unlikely]] default: {
+               ctx.error = error_code::syntax_error;
+               return;
+            }
             }
          }
       }

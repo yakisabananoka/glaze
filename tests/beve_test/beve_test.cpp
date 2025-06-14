@@ -46,8 +46,8 @@ struct glz::meta<my_struct>
    );
 };
 
-static_assert(glz::write_supported<glz::BEVE, my_struct>);
-static_assert(glz::read_supported<glz::BEVE, my_struct>);
+static_assert(glz::write_supported<my_struct, glz::BEVE>);
+static_assert(glz::read_supported<my_struct, glz::BEVE>);
 
 struct sub_thing
 {
@@ -169,7 +169,7 @@ struct Thing
    std::map<int, double> mapi{{5, 3.14}, {7, 7.42}, {2, 9.63}};
    sub_thing* thing_ptr{};
 
-   Thing() : thing_ptr(&thing){};
+   Thing() : thing_ptr(&thing) {};
 };
 
 template <>
@@ -531,7 +531,7 @@ void test_partial()
    static constexpr auto groups = glz::group_json_ptrs<sorted>();
 
    static constexpr auto N = glz::tuple_size_v<decltype(groups)>;
-   glz::for_each<N>([&](auto I) {
+   glz::for_each<N>([&]<auto I>() {
       const auto group = glz::get<I>(groups);
       std::cout << glz::get<0>(group) << ": ";
       for (auto& rest : glz::get<1>(group)) {

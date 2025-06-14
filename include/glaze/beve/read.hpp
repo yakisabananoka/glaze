@@ -22,7 +22,7 @@ namespace glz
    struct parse<BEVE>
    {
       template <auto Opts, class T, class Tag, is_context Ctx, class It0, class It1>
-         requires(has_no_header(Opts))
+         requires(check_no_header(Opts))
       GLZ_ALWAYS_INLINE static void op(T&& value, Tag&& tag, Ctx&& ctx, It0&& it, It1&& end)
       {
          if constexpr (const_value_v<T>) {
@@ -42,7 +42,7 @@ namespace glz
       }
 
       template <auto Opts, class T, is_context Ctx, class It0, class It1>
-         requires(not has_no_header(Opts))
+         requires(not check_no_header(Opts))
       GLZ_ALWAYS_INLINE static void op(T&& value, Ctx&& ctx, It0&& it, It1&& end)
       {
          if constexpr (const_value_v<T>) {
@@ -169,7 +169,7 @@ namespace glz
          std::memcpy(data, it, Length);
          it += Length;
 
-         invoke_table<N>([&]<size_t I>() {
+         for_each<N>([&]<size_t I>() {
             get_member(value, get<I>(reflect<T>::values)) = data[I / 8] & (uint8_t{1} << (7 - (I % 8)));
          });
       }
@@ -183,7 +183,7 @@ namespace glz
       static constexpr uint8_t header = tag::number | type | (byte_count<T> << 5);
 
       template <auto Opts>
-         requires(has_no_header(Opts))
+         requires(check_no_header(Opts))
       GLZ_ALWAYS_INLINE static void op(auto&& value, const uint8_t tag, is_context auto&& ctx, auto&& it,
                                        auto&& end) noexcept
       {
@@ -300,7 +300,7 @@ namespace glz
       }
 
       template <auto Opts>
-         requires(not has_no_header(Opts))
+         requires(not check_no_header(Opts))
       GLZ_ALWAYS_INLINE static void op(auto&& value, is_context auto&& ctx, auto&& it, auto&& end) noexcept
       {
          if (invalid_end(ctx, it, end)) {
@@ -321,7 +321,7 @@ namespace glz
       {
          using V = std::underlying_type_t<std::decay_t<T>>;
 
-         if constexpr (has_no_header(Opts)) {
+         if constexpr (check_no_header(Opts)) {
             if ((it + sizeof(V)) > end) [[unlikely]] {
                ctx.error = error_code::unexpected_end;
                return;
@@ -362,7 +362,7 @@ namespace glz
       template <auto Opts>
       static void op(auto&& value, is_context auto&& ctx, auto&& it, auto&& end) noexcept
       {
-         if constexpr (has_no_header(Opts)) {
+         if constexpr (check_no_header(Opts)) {
             using V = std::decay_t<T>;
             if ((it + sizeof(V)) > end) [[unlikely]] {
                ctx.error = error_code::unexpected_end;
@@ -506,7 +506,7 @@ namespace glz
       static_assert(sizeof(V) == 1);
 
       template <auto Opts>
-         requires(has_no_header(Opts))
+         requires(check_no_header(Opts))
       GLZ_ALWAYS_INLINE static void op(auto&& value, const uint8_t, is_context auto&& ctx, auto&& it, auto&& end)
       {
          const auto n = int_from_compressed(ctx, it, end);
@@ -523,7 +523,7 @@ namespace glz
       }
 
       template <auto Opts>
-         requires(not has_no_header(Opts))
+         requires(not check_no_header(Opts))
       GLZ_ALWAYS_INLINE static void op(auto&& value, is_context auto&& ctx, auto&& it, auto&& end)
       {
          constexpr uint8_t header = tag::string;
@@ -1242,7 +1242,7 @@ namespace glz
       template <auto Opts>
       GLZ_ALWAYS_INLINE static void op(auto&&, is_context auto&& ctx, auto&& it, auto&& end) noexcept
       {
-         if constexpr (has_no_header(Opts)) {
+         if constexpr (check_no_header(Opts)) {
             skip_compressed_int(ctx, it, end);
          }
          else {
@@ -1264,7 +1264,7 @@ namespace glz
    };
 
    template <class T>
-      requires(glaze_object_t<T> || reflectable<T>)
+      requires((glaze_object_t<T> || reflectable<T>) && not custom_read<T>)
    struct from<BEVE, T> final
    {
       template <auto Opts>
@@ -1293,7 +1293,7 @@ namespace glz
                return;
             }
 
-            invoke_table<N>(
+            for_each<N>(
                [&]<size_t I>() { parse<BEVE>::op<Opts>(get_member(value, get<I>(reflect<V>::values)), ctx, it, end); });
          }
       }
@@ -1369,7 +1369,7 @@ namespace glz
                   const sv key{it, n};
                   it += n;
 
-                  jump_table<N>(
+                  visit<N>(
                      [&]<size_t I>() {
                         static constexpr auto TargetKey = get<I>(reflect<T>::keys);
                         static constexpr auto Length = TargetKey.size();
@@ -1452,7 +1452,7 @@ namespace glz
             return;
          }
 
-         invoke_table<N>(
+         for_each<N>(
             [&]<size_t I>() { parse<BEVE>::op<Opts>(get_member(value, get<I>(reflect<T>::values)), ctx, it, end); });
       }
    };
@@ -1483,7 +1483,7 @@ namespace glz
             }
 
             if constexpr (is_std_tuple<T>) {
-               for_each_short_circuit<N>([&](auto I) {
+               for_each_short_circuit<N>([&]<auto I>() {
                   if (I < n) {
                      parse<BEVE>::op<Opts>(std::get<I>(value), ctx, it, end);
                      return false; // continue
@@ -1492,7 +1492,7 @@ namespace glz
                });
             }
             else {
-               for_each_short_circuit<N>([&](auto I) {
+               for_each_short_circuit<N>([&]<auto I>() {
                   if (I < n) {
                      parse<BEVE>::op<Opts>(glz::get<I>(value), ctx, it, end);
                      return false; // continue
@@ -1512,10 +1512,10 @@ namespace glz
             }
 
             if constexpr (is_std_tuple<T>) {
-               invoke_table<N>([&]<size_t I>() { parse<BEVE>::op<Opts>(std::get<I>(value), ctx, it, end); });
+               for_each<N>([&]<size_t I>() { parse<BEVE>::op<Opts>(std::get<I>(value), ctx, it, end); });
             }
             else {
-               invoke_table<N>([&]<size_t I>() { parse<BEVE>::op<Opts>(glz::get<I>(value), ctx, it, end); });
+               for_each<N>([&]<size_t I>() { parse<BEVE>::op<Opts>(glz::get<I>(value), ctx, it, end); });
             }
          }
       }
@@ -1536,15 +1536,13 @@ namespace glz
       }
    };
 
-   template <class T, class Buffer>
-      requires(read_supported<BEVE, T>)
+   template <read_supported<BEVE> T, class Buffer>
    [[nodiscard]] inline error_ctx read_beve(T&& value, Buffer&& buffer)
    {
       return read<opts{.format = BEVE}>(value, std::forward<Buffer>(buffer));
    }
 
-   template <class T, class Buffer>
-      requires(read_supported<BEVE, T>)
+   template <read_supported<BEVE> T, class Buffer>
    [[nodiscard]] inline expected<T, error_ctx> read_beve(Buffer&& buffer)
    {
       T value{};
@@ -1555,8 +1553,7 @@ namespace glz
       return value;
    }
 
-   template <auto Opts = opts{}, class T>
-      requires(read_supported<BEVE, T>)
+   template <auto Opts = opts{}, read_supported<BEVE> T>
    [[nodiscard]] inline error_ctx read_file_beve(T& value, const sv file_name, auto&& buffer)
    {
       context ctx{};
@@ -1571,16 +1568,14 @@ namespace glz
       return read<set_beve<Opts>()>(value, buffer, ctx);
    }
 
-   template <class T, class Buffer>
-      requires(read_supported<BEVE, T>)
+   template <read_supported<BEVE> T, class Buffer>
    [[nodiscard]] inline error_ctx read_binary_untagged(T&& value, Buffer&& buffer)
    {
       return read<opts{.format = BEVE, .structs_as_arrays = true}>(std::forward<T>(value),
                                                                    std::forward<Buffer>(buffer));
    }
 
-   template <class T, class Buffer>
-      requires(read_supported<BEVE, T>)
+   template <read_supported<BEVE> T, class Buffer>
    [[nodiscard]] inline expected<T, error_ctx> read_binary_untagged(Buffer&& buffer)
    {
       T value{};
@@ -1591,8 +1586,7 @@ namespace glz
       return value;
    }
 
-   template <auto Opts = opts{}, class T>
-      requires(read_supported<BEVE, T>)
+   template <auto Opts = opts{}, read_supported<BEVE> T>
    [[nodiscard]] inline error_ctx read_file_beve_untagged(T& value, const std::string& file_name, auto&& buffer)
    {
       return read_file_beve<opt_true<Opts, &opts::structs_as_arrays>>(value, file_name, buffer);

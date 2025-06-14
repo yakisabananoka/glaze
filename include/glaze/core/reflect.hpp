@@ -5,6 +5,7 @@
 
 #include "glaze/beve/header.hpp"
 #include "glaze/core/common.hpp"
+#include "glaze/core/wrappers.hpp"
 #include "glaze/util/primes_64.hpp"
 
 #ifdef _MSC_VER
@@ -249,6 +250,55 @@ namespace glz
       }
    }();
 
+   template <class V, class From>
+   consteval bool custom_type_is_nullable()
+   {
+      if constexpr (std::is_member_pointer_v<From>) {
+         if constexpr (std::is_member_function_pointer_v<From>) {
+            using Ret = typename return_type<From>::type;
+            if constexpr (std::is_void_v<Ret>) {
+               using Tuple = typename inputs_as_tuple<From>::type;
+               if constexpr (glz::tuple_size_v<Tuple> == 1) {
+                  using Input = std::decay_t<glz::tuple_element_t<0, Tuple>>;
+                  return bool(null_t<Input>);
+               }
+            }
+         }
+         else if constexpr (std::is_member_object_pointer_v<From>) {
+            using Value = std::decay_t<decltype(std::declval<V>().val.*(std::declval<V>().from))>;
+            if constexpr (is_specialization_v<Value, std::function>) {
+               using Ret = typename function_traits<Value>::result_type;
+
+               if constexpr (std::is_void_v<Ret>) {
+                  using Tuple = typename function_traits<Value>::arguments;
+                  if constexpr (glz::tuple_size_v<Tuple> == 1) {
+                     using Input = std::decay_t<glz::tuple_element_t<0, Tuple>>;
+                     return bool(null_t<Input>);
+                  }
+               }
+            }
+            else {
+               return bool(null_t<Value>);
+            }
+         }
+      }
+      else {
+         if constexpr (is_invocable_concrete<From>) {
+            using Ret = invocable_result_t<From>;
+            if constexpr (std::is_void_v<Ret>) {
+               using Tuple = invocable_args_t<From>;
+               constexpr auto N = glz::tuple_size_v<Tuple>;
+               if constexpr (N == 2) {
+                  using Input = std::decay_t<glz::tuple_element_t<1, Tuple>>;
+                  return bool(null_t<Input>);
+               }
+            }
+         }
+      }
+
+      return false;
+   }
+
    template <class T, auto Opts>
    constexpr auto required_fields()
    {
@@ -256,8 +306,20 @@ namespace glz
 
       bit_array<N> fields{};
       if constexpr (Opts.error_on_missing_keys) {
-         for_each<N>([&](auto I) constexpr {
-            fields[I] = !bool(Opts.skip_null_members) || !null_t<std::decay_t<refl_t<T, I>>>;
+         for_each<N>([&]<auto I>() constexpr {
+            using V = std::decay_t<refl_t<T, I>>;
+            if constexpr (is_specialization_v<V, custom_t>) {
+               using From = typename V::from_t;
+
+               // If we are reading a glz::custom_t, we must deduce the input argument and not require the key if it is
+               // optional This allows error_on_missing_keys to work properly with glz::custom_t wrapping optional types
+               constexpr bool nullable_in_custom = custom_type_is_nullable<V, From>();
+
+               fields[I] = !Opts.skip_null_members || !(std::same_as<From, skip> || nullable_in_custom);
+            }
+            else {
+               fields[I] = !Opts.skip_null_members || !null_t<V>;
+            }
          });
       }
       return fields;
@@ -446,7 +508,7 @@ namespace glz
    template <class T, size_t N>
    constexpr size_t get_max_keys = [] {
       size_t res{};
-      for_each<N>([&](auto I) {
+      for_each<N>([&]<auto I>() {
          using V = std::decay_t<std::variant_alternative_t<I, T>>;
          if constexpr (glaze_object_t<V> || reflectable<V>) {
             res += reflect<V>::size;
@@ -467,7 +529,7 @@ namespace glz
       // This intermediate pointer is necessary for GCC 13 (otherwise segfaults with reflection logic)
       auto* data_ptr = &keys;
       size_t index = 0;
-      for_each<N>([&](auto I) {
+      for_each<N>([&]<auto I>() {
          using V = std::decay_t<std::variant_alternative_t<I, T>>;
          if constexpr (glaze_object_t<V> || reflectable<V> || is_memory_object<V>) {
             using X = std::conditional_t<is_memory_object<V>, memory_type<V>, V>;
@@ -501,7 +563,7 @@ namespace glz
          make_variant_deduction_base_map<T>(std::make_index_sequence<key_size_pair.second>{}, key_size_pair.first);
 
       constexpr auto N = std::variant_size_v<T>;
-      for_each<N>([&](auto I) {
+      for_each<N>([&]<auto I>() {
          using V = decay_keep_volatile_t<std::variant_alternative_t<I, T>>;
          if constexpr (glaze_object_t<V> || reflectable<V> || is_memory_object<V>) {
             using X = std::conditional_t<is_memory_object<V>, memory_type<V>, V>;
@@ -1911,7 +1973,15 @@ namespace glz
 
    [[nodiscard]] inline std::string format_error(const error_ctx& pe)
    {
-      return std::string{meta<error_code>::keys[uint32_t(pe.ec)]};
+      std::string error_str{meta<error_code>::keys[uint32_t(pe.ec)]};
+      if (pe.includer_error.size()) {
+         error_str.append(pe.includer_error);
+      }
+      if (pe.custom_error_message.size()) {
+         error_str.append(" ");
+         error_str.append(pe.custom_error_message.begin(), pe.custom_error_message.end());
+      }
+      return error_str;
    }
 
    [[nodiscard]] inline std::string format_error(const error_ctx& pe, const auto& buffer)
@@ -1922,6 +1992,10 @@ namespace glz
       auto error_str = detail::generate_error_string(error_type_str, info);
       if (pe.includer_error.size()) {
          error_str.append(pe.includer_error);
+      }
+      if (pe.custom_error_message.size()) {
+         error_str.append(" ");
+         error_str.append(pe.custom_error_message.begin(), pe.custom_error_message.end());
       }
       return error_str;
    }

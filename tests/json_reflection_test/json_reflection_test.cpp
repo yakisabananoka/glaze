@@ -844,4 +844,137 @@ suite hash_tests = [] {
    };
 };
 
+struct custom_state
+{
+   std::array<uint32_t, 8> statuses() { return {}; }
+};
+
+template <>
+struct glz::meta<custom_state>
+{
+   using T = custom_state;
+   static constexpr auto read = [](T&, const std::array<uint32_t, 8>&) {};
+   static constexpr auto value = custom<read, &T::statuses>;
+};
+
+struct custom_holder
+{
+   uint32_t x{};
+   uint32_t y{};
+   uint32_t z{};
+   custom_state state{};
+};
+
+suite custom_holder_tests = [] {
+   "custom_holder"_test = [] {
+      custom_holder obj{};
+      std::string buffer{};
+      expect(not glz::write_json(obj, buffer));
+      expect(not glz::read_json(obj, buffer));
+   };
+
+   "custom_holder seek"_test = [] {
+      custom_holder obj{};
+      std::string buffer{};
+      bool b = glz::seek([&](auto&& val) { std::ignore = glz::write_json(val, buffer); }, obj, "/state");
+      expect(b);
+      expect(buffer == "[0,0,0,0,0,0,0,0]") << buffer;
+   };
+};
+
+enum struct some_enum { one, two, three };
+
+template <>
+struct glz::meta<some_enum>
+{
+   using enum some_enum;
+   static constexpr auto value = enumerate(one, two, three);
+};
+
+struct struct_with_a_pair
+{
+   std::pair<some_enum, std::string> value{};
+
+   constexpr auto operator<=>(const struct_with_a_pair& rhs) const = default;
+};
+
+suite enum_pair_tests = [] {
+   "enum pair"_test = [] {
+      struct_with_a_pair obj{};
+      std::string buffer{};
+      expect(not glz::write_json(obj, buffer));
+      expect(buffer == R"({"value":{"one":""}})") << buffer;
+
+      buffer = R"({"value":{"two":"message"}})";
+
+      expect(not glz::read_json(obj, buffer));
+      expect(obj.value.first == some_enum::two);
+      expect(obj.value.second == "message");
+   };
+};
+
+struct renamed_t
+{
+   std::string first_name{};
+   std::string last_name{};
+   int age{};
+};
+
+template <>
+struct glz::meta<renamed_t>
+{
+   static constexpr std::string_view rename_key(const std::string_view key)
+   {
+      if (key == "first_name") {
+         return "firstName";
+      }
+      else if (key == "last_name") {
+         return "lastName";
+      }
+      return key;
+   }
+};
+
+// This example shows how we use dynamic memory at compile time for string transformations
+struct suffixed_keys_t
+{
+   std::string first{};
+   std::string last{};
+};
+
+template <>
+struct glz::meta<suffixed_keys_t>
+{
+   static constexpr std::string rename_key(const auto key) { return std::string(key) + "_name"; }
+};
+
+suite rename_tests = [] {
+   "rename"_test = [] {
+      renamed_t obj{};
+      std::string buffer{};
+      expect(not glz::write_json(obj, buffer));
+      expect(buffer == R"({"firstName":"","lastName":"","age":0})") << buffer;
+
+      buffer = R"({"firstName":"Kira","lastName":"Song","age":29})";
+
+      expect(not glz::read_json(obj, buffer));
+      expect(obj.first_name == "Kira");
+      expect(obj.last_name == "Song");
+      expect(obj.age == 29);
+   };
+
+   "suffixed keys"_test = [] {
+      suffixed_keys_t obj{};
+      std::string buffer{};
+      expect(not glz::write_json(obj, buffer));
+      expect(buffer == R"({"first_name":"","last_name":""})") << buffer;
+
+      buffer = R"({"first_name":"Kira","last_name":"Song"})";
+
+      expect(not glz::read_json(obj, buffer));
+      expect(obj.first == "Kira");
+      expect(obj.last == "Song");
+   };
+};
+
 int main() { return 0; }

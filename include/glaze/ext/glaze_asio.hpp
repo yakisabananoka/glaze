@@ -18,7 +18,7 @@ static_assert(false, "standalone or boost asio must be included to use glaze/ext
 #include <coroutine>
 #include <iostream>
 
-#include "glaze/rpc/repe/registry.hpp"
+#include "glaze/rpc/registry.hpp"
 #include "glaze/util/memory_pool.hpp"
 
 namespace glz
@@ -43,10 +43,7 @@ namespace glz
          }
          const auto error_size = 4 + error_message.size(); // 4 bytes for message length
          msg.header.body_length = error_size;
-         msg.body.resize(error_size);
-         const uint32_t n = uint32_t(error_message.size());
-         std::memcpy(msg.body.data(), &n, 4);
-         std::memcpy(msg.body.data() + 4, error_message.data(), n);
+         msg.body = error_message;
       }
 
       template <class ErrorMessage>
@@ -62,9 +59,7 @@ namespace glz
          if (bool(msg.error())) {
             const auto ec = msg.header.ec;
             if (msg.header.body_length >= 4) {
-               uint32_t error_length{};
-               std::memcpy(&error_length, msg.body.data(), 4);
-               const std::string_view error_message{msg.body.data() + 4, error_length};
+               const std::string_view error_message = msg.body;
                std::string ret = "REPE error: ";
                ret.append(format_error(ec));
                ret.append(" | ");
@@ -86,9 +81,7 @@ namespace glz
          if (bool(msg.header.ec)) {
             const auto ec = msg.header.ec;
             if (msg.header.body_length >= 4) {
-               uint32_t error_length{};
-               std::memcpy(&error_length, msg.body.data(), 4);
-               const std::string_view error_message{msg.body.data() + 4, error_length};
+               const std::string_view error_message = msg.body;
                std::string ret = "REPE error: ";
                ret.append(format_error(ec));
                ret.append(" | ");
@@ -220,8 +213,13 @@ namespace glz
       {
          std::unique_lock lock{mtx};
 
+         if (not ctx) {
+            // TODO: make this error into an error code
+            throw std::runtime_error("asio::io_context is null");
+         }
+
          // reset all socket pointers if a connection failed
-         if (not *is_connected) {
+         if (not*is_connected) {
             for (auto& socket : sockets) {
                socket.reset();
             }
@@ -318,7 +316,7 @@ namespace glz
       };
 
       std::shared_ptr<asio::io_context> ctx{};
-      std::shared_ptr<glz::socket_pool> socket_pool = std::make_shared<glz::socket_pool>();
+      std::shared_ptr<glz::socket_pool> socket_pool{};
       std::shared_ptr<glz::memory_pool<repe::message>> message_pool =
          std::make_shared<glz::memory_pool<repe::message>>();
 
@@ -329,11 +327,19 @@ namespace glz
 
       [[nodiscard]] error_code init()
       {
-         ctx = std::make_shared<asio::io_context>(concurrency);
-         socket_pool->ctx = ctx;
-         socket_pool->host = host;
-         socket_pool->service = service;
-         is_connected = socket_pool->is_connected;
+         *is_connected = false;
+         // create a new socket_pool if we are initilaizing, this is needed because the sockets hold references to the
+         // io_context which is being recreated with init()
+         socket_pool = std::make_shared<glz::socket_pool>();
+
+         {
+            std::unique_lock lock{socket_pool->mtx}; // lock the socket_pool when setting up
+            ctx = std::make_shared<asio::io_context>(concurrency);
+            socket_pool->ctx = ctx;
+            socket_pool->host = host;
+            socket_pool->service = service;
+            is_connected = socket_pool->is_connected;
+         }
 
          unique_socket socket{socket_pool.get()};
          if (socket) {
@@ -348,6 +354,10 @@ namespace glz
       void call(Header&& header, repe::message& response, Params&&... params)
       {
          auto request = message_pool->borrow();
+         if (not connected()) {
+            encode_error(request->error(), response, "call failure: NOT CONNECTED");
+            return;
+         }
          repe::request<Opts>(std::move(header), *request, std::forward<Params>(params)...);
          if (bool(request->error())) {
             encode_error(request->error(), response, "bad request");
@@ -365,18 +375,157 @@ namespace glz
          send_buffer(*socket, *request);
 
          if (bool(request->error())) {
-            socket.ptr.reset();
-            (*is_connected) = false;
             return;
          }
 
          if (not header.notify) {
             receive_buffer(*socket, response);
             if (bool(response.error())) {
-               socket.ptr.reset();
-               (*is_connected) = false;
                return;
             }
+         }
+      }
+
+      // The `call` method above is designed to be generic and fully-featured.
+      // The `call` method handles invoking RPC functions and sending data to query endpoints
+      // as well as receiving data back.
+      // The API is designed to reduce copies and gives the user control of how the response is handled.
+      // This is important for chaining calls and efficiently handling memory.
+      // ---
+      // The `send` and `receive` methods provide simpler APIs that throw for cleaner code
+      // and allocate the response in the function call.
+
+      // Send parameters to a target query function or value
+      template <class... Params>
+      void set(const std::string_view query, Params&&... params)
+      {
+         if (not connected()) {
+            throw std::runtime_error("asio_client: NOT CONNECTED");
+         }
+
+         repe::message response{};
+         auto request = message_pool->borrow();
+         repe::request<Opts>(repe::user_header{.query = query}, *request, std::forward<Params>(params)...);
+         if (bool(request->error())) {
+            throw std::runtime_error("bad request");
+         }
+
+         unique_socket socket{socket_pool.get()};
+         if (not socket) {
+            socket.ptr.reset();
+            (*is_connected) = false;
+            throw std::runtime_error("socket failure");
+         }
+
+         send_buffer(*socket, *request);
+
+         if (bool(request->error())) {
+            throw std::runtime_error(glz::format_error(request->error()));
+         }
+
+         receive_buffer(*socket, response);
+         if (bool(response.error())) {
+            std::string error_message = glz::format_error(response.error());
+            if (response.body.size()) {
+               error_message.append(": ");
+               error_message.append(response.body);
+            }
+            throw std::runtime_error(error_message);
+         }
+      }
+
+      template <class Output>
+      void get(const std::string_view query, Output& output)
+      {
+         if (not connected()) {
+            throw std::runtime_error("asio_client: NOT CONNECTED");
+         }
+
+         repe::message response{};
+         auto request = message_pool->borrow();
+         repe::request<Opts>(repe::user_header{.query = query}, *request);
+         if (bool(request->error())) {
+            throw std::runtime_error("bad request");
+         }
+
+         unique_socket socket{socket_pool.get()};
+         if (not socket) {
+            socket.ptr.reset();
+            (*is_connected) = false;
+            throw std::runtime_error("socket failure");
+         }
+
+         send_buffer(*socket, *request);
+
+         if (bool(request->error())) {
+            throw std::runtime_error(glz::format_error(request->error()));
+         }
+
+         receive_buffer(*socket, response);
+         if (bool(response.error())) {
+            std::string error_message = glz::format_error(response.error());
+            if (response.body.size()) {
+               error_message.append(": ");
+               error_message.append(response.body);
+            }
+            throw std::runtime_error(error_message);
+         }
+
+         auto ec = read<Opts>(output, response.body);
+         if (bool(ec)) {
+            throw std::runtime_error(glz::format_error(ec, response.body));
+         }
+      }
+
+      // Allocating version of `get`
+      template <class Output>
+      auto get(const std::string_view query)
+      {
+         Output out{};
+         get(query, out);
+         return out;
+      }
+
+      template <class Input, class Output>
+      void inout(const std::string_view query, Input&& input, Output& output)
+      {
+         if (not connected()) {
+            throw std::runtime_error("asio_client: NOT CONNECTED");
+         }
+
+         repe::message response{};
+         auto request = message_pool->borrow();
+         repe::request<Opts>(repe::user_header{.query = query}, *request, std::forward<Input>(input));
+         if (bool(request->error())) {
+            throw std::runtime_error("bad request");
+         }
+
+         unique_socket socket{socket_pool.get()};
+         if (not socket) {
+            socket.ptr.reset();
+            (*is_connected) = false;
+            throw std::runtime_error("socket failure");
+         }
+
+         send_buffer(*socket, *request);
+
+         if (bool(request->error())) {
+            throw std::runtime_error(glz::format_error(request->error()));
+         }
+
+         receive_buffer(*socket, response);
+         if (bool(response.error())) {
+            std::string error_message = glz::format_error(response.error());
+            if (response.body.size()) {
+               error_message.append(": ");
+               error_message.append(response.body);
+            }
+            throw std::runtime_error(error_message);
+         }
+
+         auto ec = read<Opts>(output, response.body);
+         if (bool(ec)) {
+            throw std::runtime_error(glz::format_error(ec, response.body));
          }
       }
    };
@@ -405,12 +554,12 @@ namespace glz
       std::shared_ptr<asio::signal_set> signals{};
       std::shared_ptr<std::vector<std::thread>> threads{};
 
-      repe::registry<Opts> registry{};
+      glz::registry<Opts> registry{};
 
       void clear_registry() { registry.clear(); }
 
-      template <const std::string_view& Root = repe::detail::empty_path, class T>
-         requires(glz::glaze_object_t<T> || glz::reflectable<T>)
+      template <const std::string_view& Root = detail::empty_path, class T>
+         requires(glaze_object_t<T> || reflectable<T>)
       void on(T& value)
       {
          registry.template on<Root>(value);
@@ -483,12 +632,15 @@ namespace glz
       asio::awaitable<void> run_instance(asio::ip::tcp::socket socket)
       {
          socket.set_option(asio::ip::tcp::no_delay(true));
+
+         // Allocate once and reuse memory
          repe::message request{};
          repe::message response{};
 
          try {
             while (true) {
                co_await co_receive_buffer(socket, request);
+               response.header.ec = {}; // clear error code, as we use this field to determine if a new error occured
                registry.call(request, response);
                if (not request.header.notify()) {
                   co_await co_send_buffer(socket, response);
